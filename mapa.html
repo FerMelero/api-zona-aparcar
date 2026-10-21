@@ -4,29 +4,94 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   html,body,#map{height:100%;margin:0}
-  #leyenda{position:absolute;z-index:1000;top:10px;right:10px;background:#fff;padding:8px 12px;border-radius:6px;font:14px sans-serif;box-shadow:0 1px 5px #0006}
+  .caja{position:absolute;z-index:1000;background:#fff;padding:8px 12px;border-radius:6px;font:14px sans-serif;box-shadow:0 1px 5px #0006}
+  #leyenda{top:10px;right:10px}
   #leyenda i{display:inline-block;width:14px;height:14px;margin-right:6px;vertical-align:middle}
-  #estado{position:absolute;z-index:1000;bottom:10px;left:10px;background:#fff;padding:4px 8px;border-radius:6px;font:13px sans-serif}
+  #estado{bottom:10px;left:10px;font-size:13px}
+  #donde{top:10px;left:50px;max-width:55vw;display:flex;flex-direction:column;gap:6px}
+  #donde button{font-size:15px;padding:8px 12px;cursor:pointer}
+  #resultado{display:none}
+  .chip{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle;margin-right:4px}
 </style></head>
-<body><div id="map"></div><div id="leyenda"></div><div id="estado">Cargando…</div>
+<body><div id="map"></div>
+<div id="leyenda" class="caja"></div>
+<div id="donde" class="caja"><button id="btn">📍 ¿Dónde estoy?</button><div id="resultado"></div></div>
+<div id="estado" class="caja">Acerca el mapa para ver las zonas</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 const COLORES = {Verde:"#1a9850", Azul:"#2166ac", Naranja:"#f58220", Rojo:"#d7191c",
-                 "Alta Rotación":"#8e24aa", Gris:"#9e9e9e", "":"#000"};
-const map = L.map("map", {preferCanvas:true}).setView([40.4168,-3.7038], 14);
+                 "Alta Rotación":"#8e24aa", Gris:"#9e9e9e"};
+const ZOOM_MIN = 16;
+// Si la página no la sirve la propia API (p. ej. Live Server o file://), apunta a la API local
+const API = location.port === "8001" ? "" : "http://localhost:8001";
+const map = L.map("map", {preferCanvas:true}).setView([40.4168,-3.7038], 16);
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   {maxZoom:19, attribution:"© OpenStreetMap · Datos: Ayuntamiento de Madrid"}).addTo(map);
 
-fetch("zonas.geojson").then(r => r.json()).then(data => {
-  const capas = {};
-  for (const color in COLORES) capas[color] = L.layerGroup();
-  L.geoJSON(data, {
-    style: f => ({color: COLORES[f.properties.Color] ?? "#000", weight: 4, opacity: .85}),
+document.getElementById("leyenda").innerHTML = Object.entries(COLORES)
+  .map(([k,c]) => `<div><i style="background:${c}"></i>${k}</div>`).join("");
+
+const estado = document.getElementById("estado");
+let capa = null, peticion = 0;
+
+async function cargarZonas() {
+  if (map.getZoom() < ZOOM_MIN) {
+    if (capa) { map.removeLayer(capa); capa = null; }
+    estado.textContent = "Acerca el mapa para ver las zonas";
+    return;
+  }
+  const id = ++peticion;
+  const b = map.getBounds();
+  const bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(",");
+  let r;
+  try { r = await fetch(`${API}/zonas?bbox=${bbox}`); }
+  catch (e) { estado.textContent = "No se puede conectar con la API (" + (API || location.origin) + ")"; return; }
+  if (id !== peticion) return;           // llegó una petición más nueva
+  if (!r.ok) { estado.textContent = (await r.json()).detail; return; }
+  const data = await r.json();
+  if (capa) map.removeLayer(capa);
+  capa = L.geoJSON(data, {
+    style: f => ({color: COLORES[f.properties.Color] ?? "#000", weight: 5, opacity: .85}),
     onEachFeature: (f, l) => l.bindPopup(
       `<b>${f.properties.Color || "Sin color"}</b><br>${f.properties.Bateria_Linea}<br>${f.properties.Res_NumPlazas} plazas`)
   }).addTo(map);
-  document.getElementById("estado").textContent = data.features.length + " tramos";
-  document.getElementById("leyenda").innerHTML = Object.entries(COLORES).filter(([k])=>k)
-    .map(([k,c]) => `<div><i style="background:${c}"></i>${k}</div>`).join("");
-});
+  estado.textContent = data.features.length + " tramos";
+}
+map.on("moveend", cargarZonas);
+cargarZonas();
+
+// --- Geolocalización ---
+let marcador = null, circulo = null;
+const resultado = document.getElementById("resultado");
+
+function aviso(texto) {
+  resultado.style.display = "block";
+  resultado.textContent = texto;
+}
+
+async function mostrarUbicacion(pos) {
+  const {latitude: lat, longitude: lon, accuracy} = pos.coords;
+  if (marcador) { map.removeLayer(marcador); map.removeLayer(circulo); }
+  marcador = L.circleMarker([lat, lon], {radius: 8, color: "#fff", weight: 2, fillColor: "#1e88e5", fillOpacity: 1}).addTo(map);
+  circulo = L.circle([lat, lon], {radius: accuracy, color: "#1e88e5", weight: 1, fillOpacity: .1}).addTo(map);
+  map.setView([lat, lon], 17);
+
+  const radio = Math.min(Math.max(Math.ceil(accuracy), 30), 150);
+  let z;
+  try { z = await (await fetch(`${API}/zona?lat=${lat}&lon=${lon}&radio=${radio}`)).json(); }
+  catch (e) { return aviso("No se puede conectar con la API."); }
+  if (!z.encontrado) return aviso("No hay zona regulada catalogada cerca de ti.");
+  const c = z.mas_cercano.color;
+  resultado.style.display = "block";
+  resultado.innerHTML = `<span class="chip" style="background:${COLORES[c] ?? "#000"}"></span><b>${c}</b> `
+    + `a ${z.mas_cercano.distancia_m} m<br><small>Precisión GPS: ±${Math.round(accuracy)} m. Colores en ${radio} m: `
+    + Object.entries(z.colores_en_radio).map(([k,n]) => `${k} (${n})`).join(", ") + "</small>";
+}
+
+document.getElementById("btn").onclick = () => {
+  if (!navigator.geolocation) return aviso("Tu navegador no soporta geolocalización.");
+  navigator.geolocation.getCurrentPosition(mostrarUbicacion,
+    e => aviso("No se pudo obtener tu ubicación: " + e.message),
+    {enableHighAccuracy: true, timeout: 15000});
+};
 </script></body></html>

@@ -28,17 +28,32 @@ Campos de la capa 4: `Color`, `Bateria_Linea`, `Res_NumPlazas`, `OBJECTID`.
 
 - `test.py`: consulta mínima a la capa 4 (5 registros).
 - `descargar.py`: descarga todos los tramos paginando y genera `zonas.geojson` (~87.500 tramos, ~24 MB).
-- `mapa.html`: visor Leaflet que pinta `zonas.geojson` por color, con leyenda y popup.
+- `api.py`: API FastAPI que sirve los tramos y el mapa.
+- `mapa.html`: visor Leaflet que consume la API: pinta los tramos por color, con leyenda y popup, y tiene un botón de geolocalización.
 
 ## Uso
 
 ```bash
-pip install requests
-python3 descargar.py          # genera zonas.geojson
-python3 -m http.server 8000   # sirve la carpeta
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python descargar.py              # genera zonas.geojson
+.venv/bin/uvicorn api:app --port 8001      # API + mapa
 ```
 
-Abre http://localhost:8000/mapa.html
+Abre http://localhost:8001 y pulsa **¿Dónde estoy?** para ver el color de la zona en la que estás. Documentación interactiva de la API en http://localhost:8001/docs.
+
+## API
+
+| Endpoint | Descripción |
+|---|---|
+| `GET /zonas?bbox=minLon,minLat,maxLon,maxLat` | GeoJSON de los tramos dentro del área. Parámetro opcional `incluir_gris=false`. Devuelve 413 si hay más de 20.000 tramos. |
+| `GET /zona?lat=..&lon=..&radio=40` | Color del tramo más cercano y recuento de colores en el radio (metros, máx. 500). |
+
+Ejemplo:
+
+```bash
+curl "localhost:8001/zona?lat=40.43&lon=-3.687&radio=100"
+```
 
 ## Notas
 
@@ -50,9 +65,9 @@ Abre http://localhost:8000/mapa.html
 ## Siguientes pasos
 
 - [ ] Aclarar el significado de cada color, sobre todo Gris.
-- [ ] API (FastAPI) con `GET /zonas?bbox=...` y `GET /zona?lat=..&lon=..`.
 - [ ] Caché de los datos con refresco periódico.
-- [ ] Frontend PWA con geolocalización.
+- [ ] Convertir el frontend en PWA instalable.
+- [ ] Despliegue (el GPS del navegador exige HTTPS fuera de localhost).
 - [ ] Tarifas y horarios.
 
 ## Licencia y datos
