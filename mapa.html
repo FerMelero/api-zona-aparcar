@@ -5,17 +5,29 @@
 <style>
   html,body,#map{height:100%;margin:0}
   .caja{position:absolute;z-index:1000;background:#fff;padding:8px 12px;border-radius:6px;font:14px sans-serif;box-shadow:0 1px 5px #0006}
-  #leyenda{top:10px;right:10px}
+  #leyenda{bottom:28px;right:10px;font-size:12px}
   #leyenda i{display:inline-block;width:14px;height:14px;margin-right:6px;vertical-align:middle}
   #estado{bottom:10px;left:10px;font-size:13px}
-  #donde{top:10px;left:50px;max-width:55vw;display:flex;flex-direction:column;gap:6px}
-  #donde button{font-size:15px;padding:8px 12px;cursor:pointer}
+  #panel{top:10px;left:50px;width:min(360px,calc(100vw - 70px));display:flex;flex-direction:column;gap:6px;max-height:calc(100vh - 80px);overflow:auto}
+  #panel input{font-size:16px;padding:8px;width:100%;box-sizing:border-box}
+  #panel button{font-size:14px;padding:6px 10px;cursor:pointer}
+  #sugerencias{list-style:none;margin:0;padding:0}
+  #sugerencias li{padding:8px 4px;border-top:1px solid #eee;cursor:pointer}
+  #sugerencias li:hover{background:#f0f4ff}
   #resultado{display:none}
   .chip{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle;margin-right:4px}
+  .opcion{border-top:1px solid #eee;padding:6px 0}
+  .nav a{display:inline-block;margin:4px 6px 0 0;padding:4px 8px;border:1px solid #1e88e5;border-radius:4px;color:#1e88e5;text-decoration:none;font-size:13px}
 </style></head>
 <body><div id="map"></div>
 <div id="leyenda" class="caja"></div>
-<div id="donde" class="caja"><button id="btn">📍 ¿Dónde estoy?</button><div id="resultado"></div></div>
+<div id="panel" class="caja">
+  <input id="q" type="search" placeholder="Busca una calle o un sitio…" autocomplete="off">
+  <ul id="sugerencias"></ul>
+  <button id="btn">📍 ¿Dónde estoy?</button>
+  <button id="btnManual">📌 Fijar mi posición en el mapa</button>
+  <div id="resultado"></div>
+</div>
 <div id="estado" class="caja">Acerca el mapa para ver las zonas</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -60,8 +72,6 @@ async function cargarZonas() {
 map.on("moveend", cargarZonas);
 cargarZonas();
 
-// --- Geolocalización ---
-let marcador = null, circulo = null;
 const resultado = document.getElementById("resultado");
 
 function aviso(texto) {
@@ -69,29 +79,168 @@ function aviso(texto) {
   resultado.textContent = texto;
 }
 
-async function mostrarUbicacion(pos) {
-  const {latitude: lat, longitude: lon, accuracy} = pos.coords;
-  if (marcador) { map.removeLayer(marcador); map.removeLayer(circulo); }
-  marcador = L.circleMarker([lat, lon], {radius: 8, color: "#fff", weight: 2, fillColor: "#1e88e5", fillOpacity: 1}).addTo(map);
-  circulo = L.circle([lat, lon], {radius: accuracy, color: "#1e88e5", weight: 1, fillOpacity: .1}).addTo(map);
-  map.setView([lat, lon], 17);
-
-  const radio = Math.min(Math.max(Math.ceil(accuracy), 30), 150);
-  let z;
-  try { z = await (await fetch(`${API}/zona?lat=${lat}&lon=${lon}&radio=${radio}`)).json(); }
-  catch (e) { return aviso("No se puede conectar con la API."); }
-  if (!z.encontrado) return aviso("No hay zona regulada catalogada cerca de ti.");
-  const c = z.mas_cercano.color;
-  resultado.style.display = "block";
-  resultado.innerHTML = `<span class="chip" style="background:${COLORES[c] ?? "#000"}"></span><b>${c}</b> `
-    + `a ${z.mas_cercano.distancia_m} m<br><small>Precisión GPS: ±${Math.round(accuracy)} m. Colores en ${radio} m: `
-    + Object.entries(z.colores_en_radio).map(([k,n]) => `${k} (${n})`).join(", ") + "</small>";
+// Enlaces para abrir la navegación en otras apps (sin claves ni cuentas)
+function enlacesNav(lat, lon) {
+  const d = document.createElement("div");
+  d.className = "nav";
+  for (const [texto, url] of [
+    ["Google Maps", `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=driving`],
+    ["Waze", `https://waze.com/ul?ll=${lat},${lon}&navigate=yes`]]) {
+    const a = document.createElement("a");
+    a.href = url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "🧭 " + texto;
+    d.append(a);
+  }
+  return d;
 }
 
-document.getElementById("btn").onclick = () => {
+// --- Geolocalización ---
+let marcador = null, circulo = null, modoManual = false;
+const btn = document.getElementById("btn");
+const btnManual = document.getElementById("btnManual");
+
+function ubicarEn(lat, lon, precision) {
+  if (marcador) { map.removeLayer(marcador); map.removeLayer(circulo); }
+  marcador = L.circleMarker([lat, lon], {radius: 8, color: "#fff", weight: 2, fillColor: "#1e88e5", fillOpacity: 1}).addTo(map);
+  circulo = L.circle([lat, lon], {radius: precision, color: "#1e88e5", weight: 1, fillOpacity: .1}).addTo(map);
+  map.setView([lat, lon], 17);
+  const texto = precision > 100
+    ? `Ubicación poco precisa (±${Math.round(precision)} m). Es normal en un PC sin GPS. Si no es tu sitio, usa «Fijar mi posición en el mapa».`
+    : precision > 0 ? `Precisión: ±${Math.round(precision)} m.` : "Posición fijada por ti en el mapa.";
+  mostrarCerca(lat, lon, "Tu ubicación", texto);
+}
+
+// Pide varias lecturas durante unos segundos y se queda con la más precisa
+function localizar() {
   if (!navigator.geolocation) return aviso("Tu navegador no soporta geolocalización.");
-  navigator.geolocation.getCurrentPosition(mostrarUbicacion,
-    e => aviso("No se pudo obtener tu ubicación: " + e.message),
-    {enableHighAccuracy: true, timeout: 15000});
+  btn.disabled = true; btn.textContent = "Buscando ubicación…";
+  let mejor = null, fin = false;
+  const terminar = () => {
+    if (fin) return; fin = true;
+    navigator.geolocation.clearWatch(watch); clearTimeout(limite);
+    btn.disabled = false; btn.textContent = "📍 ¿Dónde estoy?";
+    if (mejor) ubicarEn(mejor.latitude, mejor.longitude, mejor.accuracy);
+    else aviso("No se pudo obtener tu ubicación. Prueba a fijarla tú en el mapa.");
+  };
+  const watch = navigator.geolocation.watchPosition(p => {
+    if (!mejor || p.coords.accuracy < mejor.accuracy) mejor = p.coords;
+    if (mejor.accuracy <= 20) terminar();   // ya es suficientemente buena
+  }, e => { if (!mejor) { fin = true; navigator.geolocation.clearWatch(watch); clearTimeout(limite);
+            btn.disabled = false; btn.textContent = "📍 ¿Dónde estoy?";
+            aviso("No se pudo obtener tu ubicación: " + e.message); } },
+  {enableHighAccuracy: true, maximumAge: 0, timeout: 15000});
+  const limite = setTimeout(terminar, 10000);
+}
+btn.onclick = localizar;
+
+// Alternativa manual: tocar el mapa donde estás
+btnManual.onclick = () => {
+  modoManual = !modoManual;
+  btnManual.textContent = modoManual ? "Toca el mapa… (cancelar)" : "📌 Fijar mi posición en el mapa";
+  map.getContainer().style.cursor = modoManual ? "crosshair" : "";
 };
+map.on("click", e => {
+  if (!modoManual) return;
+  modoManual = false; btnManual.textContent = "📌 Fijar mi posición en el mapa";
+  map.getContainer().style.cursor = "";
+  ubicarEn(e.latlng.lat, e.latlng.lng, 0);
+});
+
+// --- Buscador de calles y sitios ---
+const q = document.getElementById("q");
+const sugerencias = document.getElementById("sugerencias");
+let pin = null, timer = null, busqueda = 0;
+
+q.addEventListener("input", () => {
+  clearTimeout(timer);
+  sugerencias.replaceChildren();
+  if (q.value.trim().length < 3) return;
+  timer = setTimeout(buscar, 400);        // espera a que el usuario deje de escribir
+});
+
+async function buscar() {
+  const id = ++busqueda;
+  const c = map.getCenter();
+  let r;
+  try { r = await fetch(`${API}/buscar?q=${encodeURIComponent(q.value.trim())}&lat=${c.lat}&lon=${c.lng}`); }
+  catch (e) { return aviso("No se puede conectar con la API."); }
+  if (id !== busqueda) return;
+  if (!r.ok) return aviso((await r.json()).detail);
+  const lugares = await r.json();
+  sugerencias.replaceChildren();
+  if (!lugares.length) { const li = document.createElement("li"); li.textContent = "Sin resultados en Madrid"; sugerencias.append(li); return; }
+  for (const l of lugares) {
+    const li = document.createElement("li");
+    li.textContent = l.etiqueta;           // textContent: los datos vienen de un servicio externo
+    li.onclick = () => elegirDestino(l);
+    sugerencias.append(li);
+  }
+}
+
+function elegirDestino(l) {
+  sugerencias.replaceChildren();
+  q.value = l.etiqueta;
+  if (pin) map.removeLayer(pin);
+  pin = L.marker([l.lat, l.lon]).addTo(map).bindPopup(l.etiqueta).openPopup();
+  map.setView([l.lat, l.lon], 17);
+  mostrarCerca(l.lat, l.lon, "Destino");
+}
+
+// --- Panel «dónde aparcar cerca» ---
+const ocultos = new Set();      // colores que el usuario ha desactivado en el filtro
+
+async function mostrarCerca(lat, lon, titulo, nota) {
+  let r;
+  try { r = await fetch(`${API}/cerca?lat=${lat}&lon=${lon}&radio=300`); }
+  catch (e) { return aviso("No se puede conectar con la API."); }
+  if (!r.ok) return aviso("Error consultando las zonas cercanas.");
+  pintarPanel(lat, lon, titulo, nota, (await r.json()).opciones);
+}
+
+function pintarPanel(lat, lon, titulo, nota, opciones) {
+  resultado.style.display = "block";
+  resultado.replaceChildren();
+
+  const cab = document.createElement("div");
+  const b = document.createElement("b"); b.textContent = titulo;
+  cab.append(b, enlacesNav(lat, lon));
+  resultado.append(cab);
+  if (nota) { const n = document.createElement("small"); n.textContent = nota; resultado.append(n); }
+
+  const t = document.createElement("div");
+  t.style.marginTop = "8px";
+  resultado.append(t);
+  if (!opciones.length) { t.textContent = "No hay zona regulada catalogada a menos de 300 m."; return; }
+  t.innerHTML = "<b>Dónde aparcar cerca</b> <small>(andando)</small>";
+
+  // Filtro por color
+  const filtro = document.createElement("div");
+  filtro.style.margin = "4px 0";
+  for (const o of opciones) {
+    const f = document.createElement("label");
+    f.style.marginRight = "8px";
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.checked = !ocultos.has(o.color);
+    cb.onchange = () => { cb.checked ? ocultos.delete(o.color) : ocultos.add(o.color);
+                          pintarPanel(lat, lon, titulo, nota, opciones); };
+    f.append(cb, ` ${o.color}`);
+    filtro.append(f);
+  }
+  resultado.append(filtro);
+
+  const visibles = opciones.filter(o => !ocultos.has(o.color));
+  if (!visibles.length) resultado.append("Todos los colores están desactivados.");
+  for (const o of visibles) {
+    const d = document.createElement("div");
+    d.className = "opcion";
+    const dist = o.a_pie_m != null ? `${o.a_pie_m} m andando (~${Math.max(o.a_pie_min, 1)} min)`
+                                   : `${o.distancia_m} m en línea recta`;
+    d.innerHTML = `<span class="chip" style="background:${COLORES[o.color] ?? "#000"}"></span>`
+      + `<b>${o.color}</b> · ${dist} · ${o.tipo} · ${o.plazas} plazas`;
+    d.append(enlacesNav(o.lat, o.lon));
+    resultado.append(d);
+  }
+  const aviso2 = document.createElement("small");
+  aviso2.textContent = "Las plazas son la capacidad del tramo, no las libres. Datos orientativos.";
+  resultado.append(aviso2);
+}
 </script></body></html>

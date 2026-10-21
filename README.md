@@ -29,7 +29,7 @@ Campos de la capa 4: `Color`, `Bateria_Linea`, `Res_NumPlazas`, `OBJECTID`.
 - `test.py`: consulta mínima a la capa 4 (5 registros).
 - `descargar.py`: descarga todos los tramos paginando y genera `zonas.geojson` (~87.500 tramos, ~24 MB).
 - `api.py`: API FastAPI que sirve los tramos y el mapa.
-- `mapa.html`: visor Leaflet que consume la API: pinta los tramos por color, con leyenda y popup, y tiene un botón de geolocalización.
+- `mapa.html`: visor Leaflet que consume la API: pinta los tramos por color, con leyenda y popup, tiene un botón de geolocalización y un buscador de calles y sitios con enlaces a Google Maps y Waze.
 
 ## Uso
 
@@ -48,6 +48,8 @@ Abre http://localhost:8001 y pulsa **¿Dónde estoy?** para ver el color de la z
 |---|---|
 | `GET /zonas?bbox=minLon,minLat,maxLon,maxLat` | GeoJSON de los tramos dentro del área. Parámetro opcional `incluir_gris=false`. Devuelve 413 si hay más de 20.000 tramos. |
 | `GET /zona?lat=..&lon=..&radio=40` | Color del tramo más cercano y recuento de colores en el radio (metros, máx. 500). |
+| `GET /buscar?q=..&lat=..&lon=..` | Busca calles y sitios de Madrid con [Photon](https://photon.komoot.io) (OSM, sin clave). Caché de 1 h. Los parámetros `lat`/`lon` priorizan resultados cercanos. |
+| `GET /cerca?lat=..&lon=..&radio=300` | Para cada color, el tramo más cercano al punto: distancia en línea recta y andando (ruta a pie vía routing.openstreetmap.de, con respaldo si falla), plazas y coordenadas de su punto medio. Parámetro opcional `incluir_gris`. |
 
 Ejemplo:
 
@@ -57,6 +59,8 @@ curl "localhost:8001/zona?lat=40.43&lon=-3.687&radio=100"
 
 ## Notas
 
+- El buscador usa el servicio público de Photon, sin garantías de disponibilidad. Respeta su uso razonable (hay debounce en el frontend y caché en la API).
+- Las plazas son la capacidad del tramo, no las libres.
 - El color `Gris` es el más numeroso (~53.000 tramos). Su significado está por confirmar.
 - Esta capa no incluye tarifas ni horarios.
 - `zonas.geojson` es un archivo generado y pesa 24 MB. Conviene no subirlo al repo (añádelo al `.gitignore`).
@@ -64,6 +68,7 @@ curl "localhost:8001/zona?lat=40.43&lon=-3.687&radio=100"
 
 ## Siguientes pasos
 
+- [x] Distancia andando y filtro por color en el panel.
 - [ ] Aclarar el significado de cada color, sobre todo Gris.
 - [ ] Caché de los datos con refresco periódico.
 - [ ] Convertir el frontend en PWA instalable.
